@@ -43,6 +43,7 @@ impl AnnaClient {
 
         let resolver = Arc::new(MirrorResolver::new(
             Some(client.clone()),
+            Some(config.wikipedia_url.clone()),
             Some(config.slum_status_url.clone()),
         ));
 

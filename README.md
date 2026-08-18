@@ -12,7 +12,7 @@ This project merges and synthesizes the best innovations from three prominent op
 ## ✨ Features
 
 - ⚡ **Model Context Protocol (MCP) Support**: Compatible with Claude Desktop, Cursor, Zed, Cline, Open WebUI, and any MCP-compliant client over stdio.
-- 🌐 **Dynamic SLUM Mirror Discovery**: Queries [open-slum.org](https://open-slum.org/) to automatically identify, score, and select the lowest-latency, healthiest Anna's Archive mirror, with automatic probe failover.
+- 📖 **Authoritative Wikipedia & SLUM Mirror Resolver**: Automatically queries the official [Anna's Archive Wikipedia entry](https://en.wikipedia.org/wiki/Anna%27s_Archive) to fetch the latest active domains (`.pk`, `.gd`, `.gl`), cross-verifying with [open-slum.org](https://open-slum.org/) heartbeat telemetry and health probes.
 - 📚 **Direct Book Search & Scraping**: Search books by title, author, topic, or ISBN with no third-party API subscription required.
 - 🔬 **Academic Paper & SciDB DOI Engine**: Auto-detects DOIs (e.g. `10.1038/nature12373`), looks up publication details via SciDB, and enables direct paper downloads without requiring an API key.
 - 📦 **Fast Downloads & Stream Downloader**: Downloads books directly via the Fast Download API with atomic temporary files, safe filename sanitization, and path-traversal protection.

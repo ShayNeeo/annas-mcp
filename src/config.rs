@@ -3,6 +3,7 @@ use directories::UserDirs;
 
 pub const DEFAULT_USER_AGENT: &str =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+pub const DEFAULT_WIKIPEDIA_URL: &str = "https://en.wikipedia.org/wiki/Anna%27s_Archive";
 pub const DEFAULT_SLUM_STATUS_URL: &str = "https://open-slum.org/";
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
 pub const DEFAULT_FALLBACK_MIRROR: &str = "annas-archive.gl";
@@ -12,6 +13,7 @@ pub struct AppConfig {
     pub secret_key: Option<String>,
     pub download_path: PathBuf,
     pub base_url: Option<String>,
+    pub wikipedia_url: String,
     pub slum_status_url: String,
     pub timeout_secs: u64,
     pub user_agent: String,
@@ -51,6 +53,9 @@ impl AppConfig {
                 if trimmed.is_empty() { None } else { Some(trimmed) }
             });
 
+        let wikipedia_url = std::env::var("ANNAS_WIKI_URL")
+            .unwrap_or_else(|_| DEFAULT_WIKIPEDIA_URL.to_string());
+
         let slum_status_url = std::env::var("ANNAS_SLUM_URL")
             .unwrap_or_else(|_| DEFAULT_SLUM_STATUS_URL.to_string());
 
@@ -63,6 +68,7 @@ impl AppConfig {
             secret_key,
             download_path,
             base_url,
+            wikipedia_url,
             slum_status_url,
             timeout_secs,
             user_agent: DEFAULT_USER_AGENT.to_string(),

@@ -17,6 +17,32 @@ fn test_normalize_base_url() {
 }
 
 #[test]
+fn test_parse_wikipedia_html() {
+    let wiki_html = r#"
+    <table class="infobox vcard">
+        <tr>
+            <th scope="row" class="infobox-label">URL</th>
+            <td class="infobox-data url">
+                <div class="plainlist">
+                    <ul>
+                        <li><span class="url"><a href="https://annas-archive.pk/" class="external text">annas-archive.pk</a></span></li>
+                        <li><span class="url"><a href="https://annas-archive.gd/" class="external text">annas-archive.gd</a></span></li>
+                        <li><span class="url"><a href="https://annas-archive.gl/" class="external text">annas-archive.gl</a></span></li>
+                    </ul>
+                </div>
+            </td>
+        </tr>
+    </table>
+    "#;
+
+    let candidates = MirrorResolver::parse_wikipedia_html(wiki_html);
+    assert_eq!(candidates.len(), 3);
+    assert_eq!(candidates[0].base_url, "annas-archive.pk");
+    assert_eq!(candidates[1].base_url, "annas-archive.gd");
+    assert_eq!(candidates[2].base_url, "annas-archive.gl");
+}
+
+#[test]
 fn test_rank_candidates() {
     let c1 = Candidate {
         monitor_id: 1,
@@ -48,7 +74,6 @@ fn test_rank_candidates() {
     };
 
     let ranked = MirrorResolver::rank_candidates(vec![c1, c2, c3]);
-    // Down mirror should be filtered out, and fast mirror ranked #1
     assert_eq!(ranked.len(), 2);
     assert_eq!(ranked[0].base_url, "annas-archive.fast");
     assert_eq!(ranked[1].base_url, "annas-archive.slow");

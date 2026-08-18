@@ -2,10 +2,13 @@ use std::collections::HashMap;
 use std::time::Duration;
 use regex::Regex;
 use reqwest::Client;
+use scraper::{Html, Selector};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use crate::config::{DEFAULT_FALLBACK_MIRROR, DEFAULT_SLUM_STATUS_URL, DEFAULT_USER_AGENT};
+use crate::config::{
+    DEFAULT_FALLBACK_MIRROR, DEFAULT_SLUM_STATUS_URL, DEFAULT_USER_AGENT, DEFAULT_WIKIPEDIA_URL,
+};
 use crate::errors::{AppError, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,6 +79,7 @@ impl Candidate {
 
 pub struct MirrorResolver {
     client: Client,
+    wikipedia_url: String,
     status_page_url: String,
 }
 
@@ -86,7 +90,11 @@ struct HeartbeatEnvelope {
 }
 
 impl MirrorResolver {
-    pub fn new(client: Option<Client>, status_page_url: Option<String>) -> Self {
+    pub fn new(
+        client: Option<Client>,
+        wikipedia_url: Option<String>,
+        status_page_url: Option<String>,
+    ) -> Self {
         let client = client.unwrap_or_else(|| {
             Client::builder()
                 .timeout(Duration::from_secs(10))
@@ -97,6 +105,7 @@ impl MirrorResolver {
 
         Self {
             client,
+            wikipedia_url: wikipedia_url.unwrap_or_else(|| DEFAULT_WIKIPEDIA_URL.to_string()),
             status_page_url: status_page_url.unwrap_or_else(|| DEFAULT_SLUM_STATUS_URL.to_string()),
         }
     }
@@ -122,29 +131,126 @@ impl MirrorResolver {
         let candidates = match self.fetch_and_rank_candidates().await {
             Ok(c) if !c.is_empty() => c,
             Ok(_) => {
-                warn!("No mirror candidates found from SLUM, using fallback: {}", fallback_url);
+                warn!("No mirror candidates found, using fallback: {}", fallback_url);
                 return Ok(fallback_url);
             }
             Err(e) => {
-                warn!("Failed to query SLUM mirror status ({}): using fallback {}", e, fallback_url);
+                warn!("Failed to query mirror sources ({}): using fallback {}", e, fallback_url);
                 return Ok(fallback_url);
             }
         };
 
-        for candidate in candidates {
+        // Try probing candidates to find an active mirror
+        for candidate in &candidates {
             if self.probe(&candidate.base_url).await {
-                info!("Selected healthy Anna's Archive mirror: https://{}", candidate.base_url);
-                return Ok(candidate.base_url);
+                info!("Selected responsive Anna's Archive mirror: https://{}", candidate.base_url);
+                return Ok(candidate.base_url.clone());
             } else {
                 warn!("Mirror probe failed for https://{}, trying next candidate", candidate.base_url);
             }
         }
 
-        warn!("All discovered mirror probes failed, falling back to {}", fallback_url);
-        Ok(fallback_url)
+        // If probe fails on all (e.g. due to DDoS-Guard challenge), use the top candidate from Wikipedia
+        let top_candidate = &candidates[0].base_url;
+        info!(
+            "Probes blocked or pending; using authoritative Wikipedia mirror: https://{}",
+            top_candidate
+        );
+        Ok(top_candidate.clone())
     }
 
     pub async fn fetch_and_rank_candidates(&self) -> Result<Vec<Candidate>> {
+        // 1. Primary Source: Always fetch official mirrors from Wikipedia
+        match self.fetch_wikipedia_candidates().await {
+            Ok(wiki_candidates) if !wiki_candidates.is_empty() => {
+                info!(
+                    "Discovered {} official Anna's Archive mirrors from Wikipedia ({})",
+                    wiki_candidates.len(),
+                    self.wikipedia_url
+                );
+
+                // Optionally enrich with SLUM heartbeat data if available
+                let enriched = self.enrich_with_heartbeats(wiki_candidates).await;
+                return Ok(Self::rank_candidates(enriched));
+            }
+            Ok(_) => {
+                warn!("Wikipedia page returned 0 mirror candidates, checking SLUM status page");
+            }
+            Err(e) => {
+                warn!("Failed to fetch Wikipedia mirrors ({}): checking SLUM status page", e);
+            }
+        }
+
+        // 2. Secondary Source: SLUM status page
+        self.fetch_slum_candidates().await
+    }
+
+    pub async fn fetch_wikipedia_candidates(&self) -> Result<Vec<Candidate>> {
+        let resp = self
+            .client
+            .get(&self.wikipedia_url)
+            .send()
+            .await
+            .map_err(|e| AppError::MirrorResolution(format!("Failed to fetch Wikipedia: {e}")))?;
+
+        if !resp.status().is_success() {
+            return Err(AppError::MirrorResolution(format!(
+                "Wikipedia returned HTTP {}",
+                resp.status()
+            )));
+        }
+
+        let html = resp
+            .text()
+            .await
+            .map_err(|e| AppError::MirrorResolution(format!("Failed to read Wikipedia HTML: {e}")))?;
+
+        let candidates = Self::parse_wikipedia_html(&html);
+        Ok(candidates)
+    }
+
+    pub fn parse_wikipedia_html(html: &str) -> Vec<Candidate> {
+        let document = Html::parse_document(html);
+        let mut seen = HashMap::new();
+        let mut candidates = Vec::new();
+
+        // 1. Check infobox URL section
+        if let Ok(url_sel) = Selector::parse("td.url a, td.infobox-data.url a") {
+            for a in document.select(&url_sel) {
+                if let Some(href) = a.value().attr("href") {
+                    let base = Self::normalize_base_url(href);
+                    if base.starts_with("annas-archive.") && !seen.contains_key(&base) {
+                        seen.insert(base.clone(), ());
+                        candidates.push(Candidate {
+                            monitor_id: 0,
+                            base_url: base.clone(),
+                            source_url: format!("https://{base}/"),
+                            heartbeats: Vec::new(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 2. General regex search over Wikipedia content for official URLs
+        let re = Regex::new(r"https?://annas-archive\.[a-z0-9-]+/?").unwrap();
+        for mat in re.find_iter(html) {
+            let base = Self::normalize_base_url(mat.as_str());
+            if base.starts_with("annas-archive.") && !seen.contains_key(&base) {
+                seen.insert(base.clone(), ());
+                candidates.push(Candidate {
+                    monitor_id: 0,
+                    base_url: base.clone(),
+                    source_url: format!("https://{base}/"),
+                    heartbeats: Vec::new(),
+                });
+            }
+        }
+
+        candidates
+    }
+
+    pub async fn fetch_slum_candidates(&self) -> Result<Vec<Candidate>> {
         let resp = self
             .client
             .get(&self.status_page_url)
@@ -165,11 +271,12 @@ impl MirrorResolver {
             .map_err(|e| AppError::MirrorResolution(format!("Failed to read SLUM HTML: {e}")))?;
 
         let candidates = Self::parse_status_page_html(&html)?;
-        if candidates.is_empty() {
-            return Ok(Vec::new());
-        }
+        let enriched = self.enrich_with_heartbeats(candidates).await;
+        Ok(Self::rank_candidates(enriched))
+    }
 
-        let slug = Self::extract_slug(&html);
+    async fn enrich_with_heartbeats(&self, candidates: Vec<Candidate>) -> Vec<Candidate> {
+        let slug = "slum";
         let heartbeat_url = format!(
             "{}/api/status-page/heartbeat/{}",
             self.status_page_url.trim_end_matches('/'),
@@ -194,7 +301,7 @@ impl MirrorResolver {
             enriched.push(c);
         }
 
-        Ok(Self::rank_candidates(enriched))
+        enriched
     }
 
     pub fn parse_status_page_html(html: &str) -> Result<Vec<Candidate>> {
@@ -214,7 +321,6 @@ impl MirrorResolver {
             }
         }
 
-        // Fallback regex matching domain URLs
         let re = Regex::new(r"https://annas-archive\.[a-z0-9-]+/?").unwrap();
         let mut seen = HashMap::new();
         let mut candidates = Vec::new();
@@ -263,14 +369,6 @@ impl MirrorResolver {
         }
 
         candidates
-    }
-
-    fn extract_slug(html: &str) -> String {
-        let slug_re = Regex::new(r#"['"]slug['"]\s*:\s*['"]([^'"]+)['"]"#).unwrap();
-        slug_re
-            .captures(html)
-            .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
-            .unwrap_or_else(|| "slum".to_string())
     }
 
     fn find_matching_bracket(input: &str, start: usize) -> Option<usize> {
@@ -328,7 +426,18 @@ impl MirrorResolver {
             .send()
             .await
         {
-            Ok(resp) => resp.status().is_success(),
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    if let Ok(text) = resp.text().await {
+                        // Check that it is not an error/parking page
+                        !text.contains("forsale.min.js")
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            }
             Err(_) => false,
         }
     }
