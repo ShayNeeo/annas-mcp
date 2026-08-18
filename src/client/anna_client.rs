@@ -199,10 +199,45 @@ impl AnnaClient {
 
     pub async fn lookup_doi(&self, doi: &str) -> Result<Paper> {
         let _ = self.ensure_authenticated().await;
-        let mirror = self.get_active_mirror().await?;
-        let scidb_search_url = format!("https://{}/scidb/{}", mirror, doi.trim());
+        let clean_doi = doi.trim();
 
-        info!("Looking up DOI via SciDB: {}", scidb_search_url);
+        // 1. Try Sci-Hub mirrors for direct PDF streams and publication metadata
+        let scihub_hosts = ["sci-hub.ru", "sci-hub.st", "sci-hub.se"];
+        for host in scihub_hosts {
+            let scihub_url = format!("https://{}/{}", host, clean_doi);
+            info!("Looking up DOI via Sci-Hub: {}", scihub_url);
+
+            match self.client.get(&scihub_url).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        if let Ok(html) = resp.text().await {
+                            info!("Sci-Hub {} returned HTTP {}, body length: {}", host, status, html.len());
+                            if let Some(paper) = AnnaScraper::parse_scihub_page(&html, clean_doi, host) {
+                                info!("Parsed paper: title={:?}, download_url={:?}", paper.title, paper.download_url);
+                                if paper.download_url.is_some() {
+                                    info!("Successfully resolved direct Sci-Hub paper PDF from https://{}", host);
+                                    return Ok(paper);
+                                }
+                            } else {
+                                warn!("Failed to parse Sci-Hub HTML from https://{}", host);
+                            }
+                        }
+                    } else {
+                        warn!("Sci-Hub {} returned HTTP {}", host, status);
+                    }
+                }
+                Err(e) => {
+                    warn!("Sci-Hub request to {} failed: {}", host, e);
+                }
+            }
+        }
+
+        // 2. Fall back to Anna's Archive active mirror SciDB
+        let mirror = self.get_active_mirror().await?;
+        let scidb_search_url = format!("https://{}/scidb/{}", mirror, clean_doi);
+
+        info!("Looking up DOI via Anna's Archive SciDB: {}", scidb_search_url);
 
         let resp = self
             .client
@@ -223,17 +258,17 @@ impl AnnaClient {
             if let Ok(detail_resp) = self.client.get(&detail_url).send().await {
                 if detail_resp.status().is_success() {
                     let detail_html = detail_resp.text().await.unwrap_or_default();
-                    let mut p = AnnaScraper::parse_scidb_detail_page(&detail_html, doi, &mirror);
+                    let mut p = AnnaScraper::parse_scidb_detail_page(&detail_html, clean_doi, &mirror);
                     p.hash = Some(hash.clone());
                     p
                 } else {
-                    AnnaScraper::parse_scidb_detail_page(&html, doi, &mirror)
+                    AnnaScraper::parse_scidb_detail_page(&html, clean_doi, &mirror)
                 }
             } else {
-                AnnaScraper::parse_scidb_detail_page(&html, doi, &mirror)
+                AnnaScraper::parse_scidb_detail_page(&html, clean_doi, &mirror)
             }
         } else {
-            AnnaScraper::parse_scidb_detail_page(&html, doi, &mirror)
+            AnnaScraper::parse_scidb_detail_page(&html, clean_doi, &mirror)
         };
 
         if paper.hash.is_none() {

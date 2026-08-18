@@ -62,3 +62,34 @@ fn test_parse_html_book_card() {
     assert_eq!(b.year, Some("2023".to_string()));
     assert_eq!(b.url, "https://annas-archive.li/md5/abcdef1234567890abcdef1234567890");
 }
+
+#[test]
+fn test_parse_scihub_page() {
+    let html = r#"
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <title>Sci-Hub. Nanometre-scale thermometry in a living cell / Nature, 2013</title>
+            <meta name="citation_title" content="Nanometre-scale thermometry in a living cell">
+            <meta name="citation_author" content="Kucsko, G.">
+            <meta name="citation_author" content="Maurer, P. C.">
+            <meta name="citation_publication_date" content="2013">
+            <meta name="citation_journal_title" content="Nature">
+            <meta name="citation_doi" content="10.1038/nature12373">
+            <meta name="citation_pdf_url" content="/storage/2024/2161/f1fa2076e55135dec9460db8704912d7/kucsko2013.pdf">
+        </head>
+        <body></body>
+    </html>
+    "#;
+
+    let paper = AnnaScraper::parse_scihub_page(html, "10.1038/nature12373", "sci-hub.ru")
+        .expect("Failed to parse Sci-Hub paper");
+    assert_eq!(paper.doi, "10.1038/nature12373");
+    assert_eq!(paper.title, Some("Nanometre-scale thermometry in a living cell".to_string()));
+    assert_eq!(paper.authors, Some("Kucsko, G., Maurer, P. C.".to_string()));
+    assert_eq!(paper.journal, Some("Nature".to_string()));
+    assert_eq!(
+        paper.download_url,
+        Some("https://sci-hub.ru/storage/2024/2161/f1fa2076e55135dec9460db8704912d7/kucsko2013.pdf".to_string())
+    );
+}

@@ -28,6 +28,18 @@ impl FileDownloader {
         response: Response,
         destination_path: &Path,
     ) -> Result<DownloadedFileInfo> {
+        if let Some(ct) = response.headers().get(reqwest::header::CONTENT_TYPE) {
+            if let Ok(ct_str) = ct.to_str() {
+                if ct_str.contains("text/html") {
+                    let text_preview = response.text().await.unwrap_or_default();
+                    let snippet = text_preview.chars().take(200).collect::<String>();
+                    return Err(AppError::Download(format!(
+                        "Download aborted: Server returned an HTML web page instead of the requested binary file. Preview: {snippet}"
+                    )));
+                }
+            }
+        }
+
         if let Some(parent) = destination_path.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -35,12 +47,25 @@ impl FileDownloader {
         let temp_path = destination_path.with_extension("download.tmp");
         let mut file = File::create(&temp_path).await?;
         let mut bytes_written: u64 = 0;
+        let mut first_chunk = true;
 
         let mut stream = response.bytes_stream();
 
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(chunk) => {
+                    if first_chunk {
+                        first_chunk = false;
+                        let chunk_head = &chunk[..std::cmp::min(chunk.len(), 10)];
+                        let head_str = String::from_utf8_lossy(chunk_head).to_lowercase();
+                        if head_str.starts_with("<!doct") || head_str.starts_with("<html") {
+                            let _ = fs::remove_file(&temp_path).await;
+                            return Err(AppError::Download(
+                                "Download aborted: Response starts with HTML markup instead of a valid document.".to_string(),
+                            ));
+                        }
+                    }
+
                     if let Err(e) = file.write_all(&chunk).await {
                         let _ = fs::remove_file(&temp_path).await;
                         return Err(AppError::Download(format!("Failed to write chunk: {e}")));

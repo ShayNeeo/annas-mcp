@@ -229,6 +229,68 @@ impl AnnaScraper {
             scihub_url: Some(format!("https://sci-hub.se/{doi}")),
         }
     }
+
+    pub fn parse_scihub_page(html: &str, doi: &str, host: &str) -> Option<Paper> {
+        // Extract title: meta name="citation_title"
+        let title_re = Regex::new(r#"(?i)<meta\s+name=["']citation_title["']\s+content=["']([^"']+)["']"#).ok()?;
+        let title = title_re.captures(html).map(|c| c[1].trim().to_string());
+
+        // Extract authors: meta name="citation_author"
+        let author_re = Regex::new(r#"(?i)<meta\s+name=["']citation_author["']\s+content=["']([^"']+)["']"#).ok()?;
+        let mut authors = Vec::new();
+        for cap in author_re.captures_iter(html) {
+            let a = cap[1].trim();
+            if !a.is_empty() && a != "et., al." && a != "et al." {
+                authors.push(a.to_string());
+            }
+        }
+        let authors_str = if !authors.is_empty() {
+            Some(authors.join(", "))
+        } else {
+            None
+        };
+
+        // Extract journal: meta name="citation_journal_title"
+        let journal_re = Regex::new(r#"(?i)<meta\s+name=["']citation_journal_title["']\s+content=["']([^"']+)["']"#).ok()?;
+        let journal = journal_re.captures(html).map(|c| c[1].trim().to_string());
+
+        // Extract PDF download URL
+        let pdf_re = Regex::new(r#"(?i)<meta\s+name=["']citation_pdf_url["']\s+content=["']([^"']+)["']"#).ok()?;
+        let mut pdf_url = pdf_re.captures(html).map(|c| c[1].trim().to_string());
+
+        if pdf_url.is_none() {
+            let embed_re = Regex::new(r#"(?i)<(?:embed|iframe)[^>]+src=["']([^"']+\.pdf[^"']*)["']"#).ok()?;
+            pdf_url = embed_re.captures(html).map(|c| c[1].trim().to_string());
+        }
+
+        let resolved_pdf_url = pdf_url.map(|u| {
+            if u.starts_with("//") {
+                format!("https:{u}")
+            } else if u.starts_with('/') {
+                format!("https://{}{u}", host.trim_end_matches('/'))
+            } else if !u.starts_with("http") {
+                format!("https://{}/{}", host.trim_end_matches('/'), u)
+            } else {
+                u
+            }
+        });
+
+        if title.is_some() || resolved_pdf_url.is_some() {
+            Some(Paper {
+                doi: doi.to_string(),
+                title,
+                authors: authors_str,
+                journal,
+                size: None,
+                hash: None,
+                download_url: resolved_pdf_url,
+                page_url: format!("https://{}/{}", host.trim_end_matches('/'), doi),
+                scihub_url: Some(format!("https://{}/{}", host.trim_end_matches('/'), doi)),
+            })
+        } else {
+            None
+        }
+    }
 }
 
 fn extract_title(container: &ElementRef, _link: &ElementRef) -> String {
