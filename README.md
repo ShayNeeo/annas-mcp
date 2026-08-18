@@ -14,8 +14,9 @@ This project merges and synthesizes the best innovations from three prominent op
 - ⚡ **Model Context Protocol (MCP) Support**: Compatible with Claude Desktop, Cursor, Zed, Cline, Open WebUI, and any MCP-compliant client over stdio.
 - 📖 **Authoritative Wikipedia & SLUM Mirror Resolver**: Automatically queries the official [Anna's Archive Wikipedia entry](https://en.wikipedia.org/wiki/Anna%27s_Archive) to fetch the latest active domains (`.pk`, `.gd`, `.gl`), cross-verifying with [open-slum.org](https://open-slum.org/) heartbeat telemetry and health probes.
 - 📚 **Direct Book Search & Scraping**: Search books by title, author, topic, or ISBN with no third-party API subscription required.
-- 🔬 **Academic Paper & SciDB DOI Engine**: Auto-detects DOIs (e.g. `10.1038/nature12373`), looks up publication details via SciDB, and enables direct paper downloads without requiring an API key.
-- 📦 **Fast Downloads & Stream Downloader**: Downloads books directly via the Fast Download API with atomic temporary files, safe filename sanitization, and path-traversal protection.
+- 🔄 **Automated Multi-Tier Fallback Downloads**: Automatically downloads books via Fast API if a key is provided, or seamlessly falls back across free decentralized **IPFS gateways** (Cloudflare, IPFS.io, Pinata, DWeb), **Libgen & Library.lol partner mirrors**, and **Anna's Archive Slow Download queue**.
+- 🔬 **Academic Paper & SciDB DOI Engine**: Auto-detects DOIs (e.g. `10.1038/nature12373`), looks up publication details via Sci-Hub and SciDB, and enables direct paper downloads.
+- 📦 **Safe Streaming Downloader**: Atomic `.tmp` writing, Content-Type & HTML challenge validation, and safe filename sanitization with path-traversal protection.
 - 🔍 **Deep Record Metadata**: Query full metadata records including ISBN-10/13, ASIN, DOI, IPFS CIDs, torrent paths, and classifications.
 - 💻 **Dual Mode**: Run either as a background MCP server (`annas-mcp mcp`) or as an interactive CLI utility.
 

@@ -10,7 +10,7 @@ use crate::client::elasticsearch::parse_elasticsearch_record;
 use crate::client::scraper::AnnaScraper;
 use crate::config::AppConfig;
 use crate::domain::{Book, ItemDetails, Paper};
-use crate::downloader::{DownloadedFileInfo, FileDownloader};
+use crate::downloader::{DownloadedFileInfo, FileDownloader, PartnerDownloadResolver};
 use crate::errors::{AppError, Result};
 use crate::mirror::MirrorResolver;
 
@@ -29,6 +29,7 @@ pub struct AnnaClient {
     resolver: Arc<MirrorResolver>,
     active_mirror: Arc<RwLock<Option<String>>>,
     downloader: Arc<FileDownloader>,
+    partner_resolver: Arc<PartnerDownloadResolver>,
     authenticated: Arc<AtomicBool>,
 }
 
@@ -48,6 +49,7 @@ impl AnnaClient {
         ));
 
         let downloader = Arc::new(FileDownloader::new(client.clone()));
+        let partner_resolver = Arc::new(PartnerDownloadResolver::new(client.clone()));
 
         Ok(Self {
             client,
@@ -55,6 +57,7 @@ impl AnnaClient {
             resolver,
             active_mirror: Arc::new(RwLock::new(None)),
             downloader,
+            partner_resolver,
             authenticated: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -358,14 +361,100 @@ impl AnnaClient {
         format: &str,
         dest_dir: Option<&Path>,
     ) -> Result<DownloadedFileInfo> {
-        let download_url = self.get_fast_download_url(md5).await?;
+        let clean_md5 = md5.trim();
         let target_folder = dest_dir.unwrap_or(&self.config.download_path);
 
-        info!("Downloading book to folder: {}", target_folder.display());
+        // Tier 1: Fast Download API (if ANNAS_SECRET_KEY is configured)
+        if self.config.secret_key.is_some() {
+            match self.get_fast_download_url(clean_md5).await {
+                Ok(fast_url) => {
+                    info!("Downloading book via Fast Download API");
+                    match self
+                        .downloader
+                        .download_to_folder(&fast_url, target_folder, title, format)
+                        .await
+                    {
+                        Ok(info) => return Ok(info),
+                        Err(e) => warn!("Fast download API stream failed: {}, falling back to free mirrors", e),
+                    }
+                }
+                Err(e) => warn!("Fast download URL resolution failed: {}, falling back to free mirrors", e),
+            }
+        }
 
-        self.downloader
-            .download_to_folder(&download_url, target_folder, title, format)
-            .await
+        info!("Starting automated multi-tier free partner download for MD5: {}", clean_md5);
+
+        // Tier 2: IPFS Gateway Direct Resolver
+        if let Ok(details) = self.get_item_details(clean_md5).await {
+            if let Some(ref cids) = details.ipfs_cids {
+                let filename = format!("{}.{}", title, format);
+                for ipfs_info in cids {
+                    let ipfs_urls = PartnerDownloadResolver::get_ipfs_gateway_urls(&ipfs_info.cid, Some(&filename));
+                    for ipfs_url in ipfs_urls {
+                        info!("Attempting free IPFS download via: {}", ipfs_url);
+                        if let Ok(info) = self
+                            .downloader
+                            .download_to_folder(&ipfs_url, target_folder, title, format)
+                            .await
+                        {
+                            info!("Successfully downloaded book from free IPFS gateway!");
+                            return Ok(info);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tier 3: External Mirror Resolvers (Library.lol & Libgen)
+        if let Ok(libgen_urls) = self.partner_resolver.resolve_library_lol(clean_md5).await {
+            for dl_url in libgen_urls {
+                info!("Attempting free download via Library.lol partner mirror: {}", dl_url);
+                if let Ok(info) = self
+                    .downloader
+                    .download_to_folder(&dl_url, target_folder, title, format)
+                    .await
+                {
+                    info!("Successfully downloaded book from Library.lol partner mirror!");
+                    return Ok(info);
+                }
+            }
+        }
+
+        if let Ok(libgen_li_urls) = self.partner_resolver.resolve_libgen_li(clean_md5).await {
+            for dl_url in libgen_li_urls {
+                info!("Attempting free download via Libgen.li partner mirror: {}", dl_url);
+                if let Ok(info) = self
+                    .downloader
+                    .download_to_folder(&dl_url, target_folder, title, format)
+                    .await
+                {
+                    info!("Successfully downloaded book from Libgen.li partner mirror!");
+                    return Ok(info);
+                }
+            }
+        }
+
+        // Tier 4: Anna's Archive Slow Download Queue
+        let mirror = self.get_active_mirror().await.unwrap_or_else(|_| "annas-archive.pk".to_string());
+        if let Ok(Some(slow_url)) = self.partner_resolver.resolve_slow_download(&mirror, clean_md5).await {
+            info!("Attempting download via Anna's Archive Slow Partner link: {}", slow_url);
+            if let Ok(info) = self
+                .downloader
+                .download_to_folder(&slow_url, target_folder, title, format)
+                .await
+            {
+                info!("Successfully downloaded book from Anna's Archive Slow Partner queue!");
+                return Ok(info);
+            }
+        }
+
+        // Tier 5: All automated free download channels failed (Anti-bot / Captcha)
+        let web_url = format!("https://{}/md5/{}", mirror, clean_md5);
+        Err(AppError::Download(format!(
+            "Could not automatically download book via Fast API, IPFS, Libgen, or Slow Partner.\n\
+             Please open this link in your browser to download for free via partner mirrors:\n{}",
+            web_url
+        )))
     }
 
     pub async fn download_paper(
